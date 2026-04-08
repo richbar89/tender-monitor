@@ -44,11 +44,11 @@ export async function runDailyJob(days = 1): Promise<{
           noticeId: s.noticeId,
           title: s.title,
           description: null,
-          buyerName: null,
-          awardedValue: null,
+          buyerName: s.buyerName ?? null,
+          awardedValue: s.awardedValue?.toString() ?? null,
           currency: "GBP",
           procurementStage: s.stage,
-          publishedDate: null,
+          publishedDate: s.publishedDate ?? null,
           noticeUrl: s.noticeUrl,
           pdfUrl: null,
           pdfStatus: "none",
@@ -77,9 +77,10 @@ export async function runDailyJob(days = 1): Promise<{
       // Fetch the notice detail page
       const detail = await fetchTenderDetail(tender.noticeUrl);
 
-      // Filter out tenders below £5M (only if value is known)
-      if (detail.awardedValue !== null && detail.awardedValue < MIN_VALUE) {
-        logger.info({ tenderId: tender.id, value: detail.awardedValue }, "Below £5M threshold — skipping");
+      // Filter out tenders below £5M or where value can't be confirmed
+      const confirmedValue = detail.awardedValue ?? (tender.awardedValue ? parseFloat(tender.awardedValue) : null);
+      if (confirmedValue === null || confirmedValue < MIN_VALUE) {
+        logger.info({ tenderId: tender.id, value: confirmedValue }, "Below £5M or unknown value — skipping");
         await db.update(tendersTable).set({ pdfStatus: "failed" }).where(eq(tendersTable.id, tender.id));
         failed++;
         continue;
