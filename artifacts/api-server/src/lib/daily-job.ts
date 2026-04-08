@@ -1,155 +1,130 @@
 import { eq, or } from "drizzle-orm";
 import { db, tendersTable } from "@workspace/db";
-import { searchTenders, fetchTenderDetail } from "./tender-scraper";
+import { searchAwardedTenders, fetchTenderDetail } from "./tender-scraper";
 import { extractPdfData } from "./pdf-extractor";
 import { logger } from "./logger";
 
-const SEARCH_KEYWORD = "Framework";
+const KEYWORD = "Framework";
 const MIN_VALUE = 5_000_000;
-const STAGES = ["award", "contract", "awarded", "contracted"];
 
-export async function runDailyJob(): Promise<{
+export async function runDailyJob(days = 1): Promise<{
   newTenders: number;
-  processed: number;
+  analysed: number;
   failed: number;
-  unsuccessfulBiddersByContract: Record<string, string[]>;
+  results: Array<{ title: string; buyerName: string | null; unsuccessfulSuppliers: string[] }>;
 }> {
-  logger.info("Daily job started");
+  logger.info({ days }, "Daily job started");
 
   let newTenders = 0;
-  let processed = 0;
+  let analysed = 0;
   let failed = 0;
-  const unsuccessfulBiddersByContract: Record<string, string[]> = {};
+  const results: Array<{ title: string; buyerName: string | null; unsuccessfulSuppliers: string[] }> = [];
 
-  // Step 1: Scrape new tenders
+  // ── Step 1: Search Find a Tender ──────────────────────────────────────────
   let scraped;
   try {
-    scraped = await searchTenders(SEARCH_KEYWORD, MIN_VALUE, STAGES, 3);
-    logger.info({ count: scraped.length }, "Scraped tenders from Find a Tender");
+    scraped = await searchAwardedTenders(KEYWORD, days);
+    logger.info({ count: scraped.length }, "Search complete");
   } catch (err) {
-    logger.error({ err }, "Failed to scrape tenders — aborting daily job");
+    logger.error({ err }, "Search failed — aborting job");
     throw err;
   }
 
-  // Step 2: Insert new tenders (skip duplicates)
-  for (const tender of scraped) {
+  // ── Step 2: Insert new tenders, skip duplicates ────────────────────────────
+  for (const s of scraped) {
     try {
       const existing = await db
         .select({ id: tendersTable.id })
         .from(tendersTable)
-        .where(eq(tendersTable.noticeId, tender.noticeId))
+        .where(eq(tendersTable.noticeId, s.noticeId))
         .limit(1);
 
       if (existing.length === 0) {
         await db.insert(tendersTable).values({
-          noticeId: tender.noticeId,
-          title: tender.title,
-          description: tender.description,
-          buyerName: tender.buyerName,
-          awardedValue: tender.awardedValue?.toString() ?? null,
-          currency: tender.currency,
-          procurementStage: tender.procurementStage,
-          publishedDate: tender.publishedDate,
-          noticeUrl: tender.noticeUrl,
-          pdfUrl: tender.pdfUrl,
+          noticeId: s.noticeId,
+          title: s.title,
+          description: null,
+          buyerName: null,
+          awardedValue: null,
+          currency: "GBP",
+          procurementStage: s.stage,
+          publishedDate: null,
+          noticeUrl: s.noticeUrl,
+          pdfUrl: null,
           pdfStatus: "none",
           unsuccessfulSuppliers: [],
         });
         newTenders++;
-        logger.info({ noticeId: tender.noticeId }, "Inserted new tender");
       }
     } catch (err) {
-      logger.warn({ err, noticeId: tender.noticeId }, "Failed to upsert tender");
+      logger.warn({ err, noticeId: s.noticeId }, "Failed to insert tender");
     }
   }
 
-  // Step 3: Find all tenders that haven't been analysed yet
+  // ── Step 3: Analyse all unprocessed tenders ────────────────────────────────
   const unprocessed = await db
     .select()
     .from(tendersTable)
-    .where(
-      or(
-        eq(tendersTable.pdfStatus, "none"),
-        eq(tendersTable.pdfStatus, "failed"),
-      ),
-    );
+    .where(or(eq(tendersTable.pdfStatus, "none"), eq(tendersTable.pdfStatus, "failed")));
 
-  logger.info({ count: unprocessed.length }, "Tenders pending analysis");
+  logger.info({ count: unprocessed.length }, "Tenders to analyse");
 
-  // Step 4: For each unprocessed tender, fetch the notice page and extract supplier info
   for (const tender of unprocessed) {
     try {
-      await db
-        .update(tendersTable)
-        .set({ pdfStatus: "downloading" })
-        .where(eq(tendersTable.id, tender.id));
+      // Mark as in-progress
+      await db.update(tendersTable).set({ pdfStatus: "downloading" }).where(eq(tendersTable.id, tender.id));
 
-      // Always fetch the detail page — extracts suppliers from HTML AND finds PDF URL
+      // Fetch the notice detail page
       const detail = await fetchTenderDetail(tender.noticeUrl);
 
-      // Update metadata from detail page
-      await db
-        .update(tendersTable)
-        .set({
-          pdfUrl: detail.pdfUrl ?? tender.pdfUrl,
-          description: detail.description ?? tender.description,
-          buyerName: detail.buyerName ?? tender.buyerName,
-          awardedValue: detail.awardedValue?.toString() ?? tender.awardedValue,
-        })
-        .where(eq(tendersTable.id, tender.id));
+      // Filter out tenders below £5M (only if value is known)
+      if (detail.awardedValue !== null && detail.awardedValue < MIN_VALUE) {
+        logger.info({ tenderId: tender.id, value: detail.awardedValue }, "Below £5M threshold — skipping");
+        await db.update(tendersTable).set({ pdfStatus: "failed" }).where(eq(tendersTable.id, tender.id));
+        failed++;
+        continue;
+      }
 
-      let suppliers: string[] = detail.htmlSuppliers ?? [];
-      let rawText: string = detail.htmlText ?? "";
+      // Start with suppliers from HTML
+      let suppliers: string[] = detail.htmlSuppliers;
+      let rawText = detail.rawText;
 
-      // If a PDF was found, also try extracting from it (may yield more structured results)
+      // If a PDF is linked, try that too — usually has more structured data
       const pdfUrl = detail.pdfUrl ?? tender.pdfUrl;
       if (pdfUrl) {
         try {
-          const pdfResult = await extractPdfData(pdfUrl);
-          if (pdfResult.unsuccessfulSuppliers.length > 0) {
-            suppliers = pdfResult.unsuccessfulSuppliers;
+          const pdf = await extractPdfData(pdfUrl);
+          if (pdf.unsuccessfulSuppliers.length > 0) {
+            suppliers = pdf.unsuccessfulSuppliers;
+            rawText = pdf.text.slice(0, 100_000);
           }
-          rawText = pdfResult.text.slice(0, 100_000);
-          logger.info({ tenderId: tender.id, count: suppliers.length }, "Extracted from PDF");
-        } catch (pdfErr) {
-          logger.warn({ pdfErr, tenderId: tender.id }, "PDF extraction failed, using HTML results");
+        } catch {
+          // PDF failed — HTML results are still used
         }
       }
 
-      await db
-        .update(tendersTable)
-        .set({
-          pdfStatus: "processed",
-          rawPdfText: rawText,
-          unsuccessfulSuppliers: suppliers,
-        })
-        .where(eq(tendersTable.id, tender.id));
+      // Save results
+      await db.update(tendersTable).set({
+        pdfStatus: "processed",
+        buyerName: detail.buyerName ?? tender.buyerName,
+        description: detail.description ?? tender.description,
+        awardedValue: detail.awardedValue?.toString() ?? tender.awardedValue,
+        pdfUrl: pdfUrl ?? tender.pdfUrl,
+        rawPdfText: rawText,
+        unsuccessfulSuppliers: suppliers,
+      }).where(eq(tendersTable.id, tender.id));
 
-      processed++;
+      analysed++;
+      results.push({ title: tender.title, buyerName: detail.buyerName, unsuccessfulSuppliers: suppliers });
 
-      if (suppliers.length > 0) {
-        unsuccessfulBiddersByContract[tender.title] = suppliers;
-        logger.info(
-          { tenderId: tender.id, title: tender.title, count: suppliers.length },
-          "Unsuccessful suppliers found",
-        );
-      } else {
-        logger.info({ tenderId: tender.id }, "No unsuccessful suppliers found in this notice");
-      }
+      logger.info({ tenderId: tender.id, suppliers: suppliers.length }, "Tender analysed");
     } catch (err) {
       logger.error({ err, tenderId: tender.id }, "Failed to analyse tender");
-      await db
-        .update(tendersTable)
-        .set({ pdfStatus: "failed" })
-        .where(eq(tendersTable.id, tender.id));
+      await db.update(tendersTable).set({ pdfStatus: "failed" }).where(eq(tendersTable.id, tender.id));
       failed++;
     }
   }
 
-  logger.info(
-    { newTenders, processed, failed, contracts: Object.keys(unsuccessfulBiddersByContract).length },
-    "Daily job completed",
-  );
-
-  return { newTenders, processed, failed, unsuccessfulBiddersByContract };
+  logger.info({ newTenders, analysed, failed }, "Daily job complete");
+  return { newTenders, analysed, failed, results };
 }

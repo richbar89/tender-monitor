@@ -3,252 +3,202 @@ import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { extractUnsuccessfulSuppliers } from "./pdf-extractor";
 
-export interface ScrapedTender {
-  noticeId: string;
-  title: string;
-  description: string | null;
-  buyerName: string | null;
-  awardedValue: number | null;
-  currency: string;
-  procurementStage: string;
-  publishedDate: string | null;
-  noticeUrl: string;
-  pdfUrl: string | null;
-}
-
 const BASE_URL = "https://www.find-tender.service.gov.uk";
 
-function parseValue(valueStr: string | null): number | null {
-  if (!valueStr) return null;
-  const cleaned = valueStr.replace(/[£,\s]/g, "").replace(/[^0-9.]/g, "");
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? null : num;
-}
-
-async function fetchWithRetry(url: string, retries = 3): Promise<string> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-GB,en;q=0.9",
-          "Accept-Encoding": "gzip, deflate, br",
-        },
-        timeout: 15000,
-      });
-      return response.data as string;
-    } catch (err) {
-      if (attempt === retries) throw err;
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
-    }
-  }
-  throw new Error("Failed after retries");
-}
+// NoticeStatus codes: 4 = Award Notice, 5 = Contract Award Notice (utilities)
+const AWARD_STATUS_CODES = ["4", "5"];
 
 function formatDateParam(date: Date): string {
-  // Find a Tender uses DD/MM/YYYY format for date params
   const dd = String(date.getDate()).padStart(2, "0");
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const yyyy = date.getFullYear();
   return `${dd}%2F${mm}%2F${yyyy}`;
 }
 
-export async function searchTenders(
+function parseGBP(text: string): number | null {
+  const match = text.replace(/,/g, "").match(/£\s*([\d.]+)/);
+  if (!match) return null;
+  const val = parseFloat(match[1]);
+  return isNaN(val) ? null : val;
+}
+
+async function httpGet(url: string): Promise<string> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": "en-GB,en;q=0.9",
+        },
+        timeout: 15000,
+      });
+      return res.data as string;
+    } catch (err) {
+      if (attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+  }
+  throw new Error("httpGet failed after retries");
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  noticeId: string;
+  noticeUrl: string;
+  title: string;
+  stage: "award" | "contract";
+}
+
+export interface TenderDetail {
+  buyerName: string | null;
+  description: string | null;
+  awardedValue: number | null;
+  pdfUrl: string | null;
+  htmlSuppliers: string[];
+  rawText: string;
+}
+
+// ─── Search ───────────────────────────────────────────────────────────────────
+
+/**
+ * Search Find a Tender for awarded contracts published in the last `days` days.
+ * Uses keyword "Framework", NoticeStatus 4 (Award Notice) and 5 (Contract Award Notice).
+ */
+export async function searchAwardedTenders(
   keyword: string,
-  minValue: number = 5_000_000,
-  stages: string[] = ["award", "contract", "awarded", "contracted"],
-  days: number = 3,
-): Promise<ScrapedTender[]> {
-  const results: ScrapedTender[] = [];
+  days: number = 1,
+): Promise<SearchResult[]> {
+  const results: SearchResult[] = [];
+  const seen = new Set<string>();
 
-  // Date range: last N days up to today
-  const toDate = new Date();
-  const fromDate = new Date();
-  fromDate.setDate(fromDate.getDate() - days);
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
 
-  const dateFrom = formatDateParam(fromDate);
-  const dateTo = formatDateParam(toDate);
+  const dateFrom = formatDateParam(from);
+  const dateTo = formatDateParam(to);
 
-  // NoticeStatus: 4 = award notice, 5 = contract award notice
-  const stageParams = ["4", "5"];
+  for (const status of AWARD_STATUS_CODES) {
+    for (let page = 1; page <= 10; page++) {
+      const url =
+        `${BASE_URL}/Search/Results` +
+        `?KeyWord=${encodeURIComponent(keyword)}` +
+        `&NoticeStatus=${status}` +
+        `&PublishedFrom=${dateFrom}` +
+        `&PublishedTo=${dateTo}` +
+        `&SortBy=3` +
+        `&Page=${page}`;
 
-  for (const stageParam of stageParams) {
-    for (let page = 1; page <= 5; page++) {
+      logger.info({ url }, "Searching Find a Tender");
+
+      let html: string;
       try {
-        const url =
-          `${BASE_URL}/Search/Results` +
-          `?KeyWord=${encodeURIComponent(keyword)}` +
-          `&NoticeStatus=${stageParam}` +
-          `&PublishedFrom=${dateFrom}` +
-          `&PublishedTo=${dateTo}` +
-          `&SortBy=3` +
-          `&Page=${page}` +
-          `&SearchType=0`;
-
-        logger.info({ url }, "Fetching search results page");
-        const html = await fetchWithRetry(url);
-        const $ = cheerio.load(html);
-
-        // Restrict to main content area to avoid sidebar/related links
-        const $main = $("main, #main-content, .govuk-main-wrapper, body");
-
-        // Find notice links only within the main results area
-        const noticeLinks = $main.find("a[href*='/Notice/']");
-
-        if (noticeLinks.length === 0) {
-          logger.info({ url, page, stageParam }, "No notice links found on page — stopping pagination");
-          break;
-        }
-
-        let pageResults = 0;
-
-        noticeLinks.each((_i, el) => {
-          const $el = $(el);
-          const href = $el.attr("href");
-          if (!href) return;
-
-          // Must match /Notice/{id} pattern
-          if (!href.match(/\/Notice\/[\w-]+/i)) return;
-
-          const title = $el.text().trim();
-          if (!title || title.length < 5) return;
-
-          // Walk up to find the result container to check notice type
-          const $container = $el.closest("article, li, .search-result, .govuk-grid-row, tr, div");
-          const containerText = $container.text().toLowerCase();
-
-          // Only accept award/contract award notices — reject anything that looks like a live tender
-          const isAwardNotice =
-            containerText.includes("award notice") ||
-            containerText.includes("contract award") ||
-            stageParam === "4" || stageParam === "5"; // trust the search filter as fallback
-
-          const isLiveTender =
-            containerText.includes("prior information notice") ||
-            (containerText.includes("contract notice") && !containerText.includes("award")) ||
-            containerText.includes("open procedure") ||
-            containerText.includes("invitation to tender") ||
-            containerText.includes("deadline");
-
-          if (!isAwardNotice || isLiveTender) return;
-
-          const noticeUrl = href.startsWith("http") ? href : `${BASE_URL}${href}`;
-          const noticeId = href.split("/Notice/")[1]?.split("?")[0] ?? href;
-          const procurementStage = stageParam === "4" ? "award" : "contract";
-
-          const valueText = $container.find("dd, .value, [data-value]").filter((_i, el) => {
-            return $(el).text().includes("£");
-          }).first().text();
-          const awardedValue = parseValue(valueText);
-
-          // Apply value filter — skip only if value is known and below threshold
-          if (awardedValue !== null && awardedValue < minValue) return;
-
-          const buyerName =
-            $container.find("dd, .authority, .buyer, .contracting-authority, .organisation").not((_i, el) => {
-              return $(el).text().includes("£");
-            }).first().text().trim() || null;
-
-          const publishedDate =
-            $container.find("time, .date, dd").filter((_i, el) => {
-              return /\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2}/.test($(el).text());
-            }).first().text().trim() || null;
-
-          results.push({
-            noticeId,
-            title,
-            description: null,
-            buyerName,
-            awardedValue,
-            currency: "GBP",
-            procurementStage,
-            publishedDate,
-            noticeUrl,
-            pdfUrl: null,
-          });
-
-          pageResults++;
-        });
-
-        logger.info({ page, stageParam, pageResults }, "Parsed page results");
-
-        // If we got fewer results than expected, we've hit the last page
-        if (pageResults === 0) break;
-
+        html = await httpGet(url);
       } catch (err) {
-        logger.error({ err, stageParam, page }, "Failed to fetch search results page");
+        logger.error({ err, url }, "Search page request failed");
         break;
       }
+
+      const $ = cheerio.load(html);
+      // Only look inside the main content area
+      const $main = $("main").length ? $("main") : $("body");
+      const links = $main.find("a[href*='/Notice/']");
+
+      if (links.length === 0) {
+        logger.info({ status, page }, "No more results");
+        break;
+      }
+
+      let found = 0;
+      links.each((_i, el) => {
+        const href = $(el).attr("href") ?? "";
+        const title = $(el).text().trim();
+
+        if (!href.match(/\/Notice\/[\w-]+/) || title.length < 5) return;
+
+        const noticeId = href.split("/Notice/")[1]?.split("?")[0];
+        if (!noticeId || seen.has(noticeId)) return;
+        seen.add(noticeId);
+
+        results.push({
+          noticeId,
+          noticeUrl: href.startsWith("http") ? href : `${BASE_URL}${href}`,
+          title,
+          stage: status === "4" ? "award" : "contract",
+        });
+        found++;
+      });
+
+      logger.info({ status, page, found }, "Parsed results page");
+      if (found === 0) break;
     }
   }
 
-  // Deduplicate by noticeId
-  const seen = new Set<string>();
-  return results.filter((t) => {
-    if (seen.has(t.noticeId)) return false;
-    seen.add(t.noticeId);
-    return true;
-  });
+  return results;
 }
 
-export interface TenderDetailResult extends Partial<ScrapedTender> {
-  htmlSuppliers: string[];
-  htmlText: string;
-}
+// ─── Detail ───────────────────────────────────────────────────────────────────
 
-export async function fetchTenderDetail(
-  noticeUrl: string,
-): Promise<TenderDetailResult> {
+/**
+ * Fetch a notice detail page and extract:
+ * - buyer name, value, description
+ * - PDF link (if any)
+ * - Unsuccessful suppliers from the HTML text
+ */
+export async function fetchTenderDetail(noticeUrl: string): Promise<TenderDetail> {
   try {
-    const html = await fetchWithRetry(noticeUrl);
+    const html = await httpGet(noticeUrl);
     const $ = cheerio.load(html);
 
-    const description =
-      $(".notice-description, .summary, [data-description], .govuk-body").first().text().trim() ||
-      null;
+    // Extract all text from the notice for supplier analysis
+    const rawText = $("main, body").text().replace(/\s+/g, " ");
 
-    const buyerName =
-      $("dd").filter((_i, el) => {
-        const prev = $(el).prev("dt").text().toLowerCase();
-        return prev.includes("authority") || prev.includes("buyer") || prev.includes("organisation");
-      }).first().text().trim() || null;
+    // Value — find first £ amount in a <dd>
+    let awardedValue: number | null = null;
+    $("dd").each((_i, el) => {
+      if (awardedValue !== null) return;
+      const v = parseGBP($(el).text());
+      if (v !== null) awardedValue = v;
+    });
 
-    const valueText =
-      $("dd").filter((_i, el) => {
-        return $(el).text().includes("£");
-      }).first().text() || "";
-    const awardedValue = parseValue(valueText);
+    // Buyer — find <dt> containing "authority", "buyer", or "organisation", then read the next <dd>
+    let buyerName: string | null = null;
+    $("dt").each((_i, el) => {
+      if (buyerName) return;
+      const label = $(el).text().toLowerCase();
+      if (label.includes("authority") || label.includes("buyer") || label.includes("organisation")) {
+        buyerName = $(el).next("dd").text().trim() || null;
+      }
+    });
 
-    // Look for PDF / document links
-    const pdfLink = $(
-      "a[href$='.pdf'], a[href*='/documents/'], a[href*='assets.publishing'], a[href*='/Documents/']"
-    ).first();
-    const pdfUrl = pdfLink.attr("href") || null;
-    const absolutePdfUrl = pdfUrl
-      ? pdfUrl.startsWith("http") ? pdfUrl : `${BASE_URL}${pdfUrl}`
-      : null;
+    // Description
+    const description = $(".govuk-body, p").first().text().trim() || null;
 
-    // Extract all visible text from the page and parse for unsuccessful suppliers
-    const pageText = $("body").text();
-    const htmlSuppliers = extractUnsuccessfulSuppliers(pageText);
+    // PDF link
+    let pdfUrl: string | null =
+      $("a[href$='.pdf'], a[href*='/documents/'], a[href*='Documents']").first().attr("href") ?? null;
+    if (pdfUrl && !pdfUrl.startsWith("http")) pdfUrl = `${BASE_URL}${pdfUrl}`;
+
+    // Extract unsuccessful suppliers from the HTML text
+    const htmlSuppliers = extractUnsuccessfulSuppliers(rawText);
 
     logger.info(
-      { noticeUrl, htmlSuppliers: htmlSuppliers.length, hasPdf: !!absolutePdfUrl },
+      { noticeUrl, awardedValue, htmlSuppliers: htmlSuppliers.length, hasPdf: !!pdfUrl },
       "Fetched tender detail",
     );
 
     return {
-      description,
       buyerName,
+      description,
       awardedValue,
-      pdfUrl: absolutePdfUrl,
+      pdfUrl,
       htmlSuppliers,
-      htmlText: pageText.slice(0, 100_000),
+      rawText: rawText.slice(0, 100_000),
     };
   } catch (err) {
-    logger.warn({ err, noticeUrl }, "Failed to fetch tender detail page");
-    return { htmlSuppliers: [], htmlText: "" };
+    logger.warn({ err, noticeUrl }, "Failed to fetch tender detail");
+    return { buyerName: null, description: null, awardedValue: null, pdfUrl: null, htmlSuppliers: [], rawText: "" };
   }
 }
