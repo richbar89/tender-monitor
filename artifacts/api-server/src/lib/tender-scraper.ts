@@ -17,12 +17,6 @@ export interface ScrapedTender {
 
 const BASE_URL = "https://www.find-tender.service.gov.uk";
 
-const VALID_STAGES = ["award", "contract", "awarded", "contracted"];
-
-function normalizeStage(stage: string): string {
-  return stage.toLowerCase().trim();
-}
-
 function parseValue(valueStr: string | null): number | null {
   if (!valueStr) return null;
   const cleaned = valueStr.replace(/[£,\s]/g, "").replace(/[^0-9.]/g, "");
@@ -36,9 +30,10 @@ async function fetchWithRetry(url: string, retries = 3): Promise<string> {
       const response = await axios.get(url, {
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (compatible; TenderTracker/1.0; +https://replit.com)",
-          Accept: "text/html,application/xhtml+xml",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-GB,en;q=0.9",
+          "Accept-Encoding": "gzip, deflate, br",
         },
         timeout: 15000,
       });
@@ -51,92 +46,96 @@ async function fetchWithRetry(url: string, retries = 3): Promise<string> {
   throw new Error("Failed after retries");
 }
 
+function formatDateParam(date: Date): string {
+  // Find a Tender uses DD/MM/YYYY format for date params
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = date.getFullYear();
+  return `${dd}%2F${mm}%2F${yyyy}`;
+}
+
 export async function searchTenders(
   keyword: string,
   minValue: number = 5_000_000,
   stages: string[] = ["award", "contract", "awarded", "contracted"],
+  days: number = 3,
 ): Promise<ScrapedTender[]> {
   const results: ScrapedTender[] = [];
 
-  const normalizedStages = stages.map(normalizeStage);
-  const validStages = normalizedStages.filter((s) => VALID_STAGES.includes(s));
+  // Date range: last N days up to today
+  const toDate = new Date();
+  const fromDate = new Date();
+  fromDate.setDate(fromDate.getDate() - days);
 
-  // Find a Tender uses status parameters: awarded = 4, contract = 5
-  // We search with keyword "Framework" and filter for award/contract notices
-  const stageToParam: Record<string, string> = {
-    award: "4",
-    awarded: "4",
-    contract: "5",
-    contracted: "5",
-  };
+  const dateFrom = formatDateParam(fromDate);
+  const dateTo = formatDateParam(toDate);
 
-  // Collect unique stage params
-  const stageParams = [
-    ...new Set(
-      validStages.map((s) => stageToParam[s]).filter(Boolean),
-    ),
-  ];
+  // NoticeStatus: 4 = award notice, 5 = contract award notice
+  const stageParams = ["4", "5"];
 
-  if (stageParams.length === 0) {
-    // Default: both award and contract stages
-    stageParams.push("4", "5");
-  }
-
-  // Try both stage values
   for (const stageParam of stageParams) {
-    try {
-      const url = `${BASE_URL}/Search/Results?KeyWord=${encodeURIComponent(keyword)}&NoticeStatus=${stageParam}&SortBy=3&Page=1&SearchType=0`;
-      logger.info({ url }, "Fetching search results page");
+    for (let page = 1; page <= 5; page++) {
+      try {
+        const url =
+          `${BASE_URL}/Search/Results` +
+          `?KeyWord=${encodeURIComponent(keyword)}` +
+          `&NoticeStatus=${stageParam}` +
+          `&PublishedFrom=${dateFrom}` +
+          `&PublishedTo=${dateTo}` +
+          `&SortBy=3` +
+          `&Page=${page}` +
+          `&SearchType=0`;
 
-      const html = await fetchWithRetry(url);
-      const $ = cheerio.load(html);
+        logger.info({ url }, "Fetching search results page");
+        const html = await fetchWithRetry(url);
+        const $ = cheerio.load(html);
 
-      // Parse search results - Find a Tender uses specific HTML structure
-      const tenderItems = $(".search-result-entry, article.notice-item, .search-results li");
+        // Primary strategy: find all notice links directly — most reliable approach
+        // Find a Tender notice URLs follow the pattern /Notice/{id}
+        const noticeLinks = $("a[href*='/Notice/']");
 
-      tenderItems.each((_i, el) => {
-        try {
+        if (noticeLinks.length === 0) {
+          logger.info({ url, page, stageParam }, "No notice links found on page — stopping pagination");
+          break;
+        }
+
+        let pageResults = 0;
+
+        noticeLinks.each((_i, el) => {
           const $el = $(el);
+          const href = $el.attr("href");
+          if (!href) return;
 
-          // Extract title and link
-          const titleEl = $el.find("h2 a, h3 a, .notice-title a, a.govuk-link").first();
-          const title = titleEl.text().trim();
-          const href = titleEl.attr("href");
+          // Skip non-notice links (e.g. pagination, breadcrumbs)
+          if (!href.match(/\/Notice\/[\w-]+/)) return;
 
-          if (!title || !href) return;
+          const title = $el.text().trim();
+          if (!title || title.length < 5) return;
 
           const noticeUrl = href.startsWith("http") ? href : `${BASE_URL}${href}`;
-          const noticeId = href.split("/").pop()?.split("?")[0] ?? href;
+          const noticeId = href.split("/Notice/")[1]?.split("?")[0] ?? href;
+          const procurementStage = stageParam === "4" ? "award" : "contract";
 
-          // Extract stage/type
-          const stageText = $el
-            .find(".notice-type, .search-result-type, [data-notice-type]")
-            .text()
-            .toLowerCase();
-          const procurementStage =
-            stageParam === "4" ? "award" : "contract";
+          // Walk up to find the result container for metadata
+          const $container = $el.closest("article, li, div.search-result, .govuk-grid-row, tr");
 
-          // Extract value
-          const valueText = $el
-            .find(".value, .contract-value, [data-value]")
-            .text();
+          const valueText = $container.find("dd, .value, [data-value]").filter((_i, el) => {
+            return $(el).text().includes("£");
+          }).first().text();
           const awardedValue = parseValue(valueText);
 
-          // Apply value filter
+          // Apply value filter — skip only if value is known and below threshold
           if (awardedValue !== null && awardedValue < minValue) return;
 
-          // Extract buyer
-          const buyerName = $el
-            .find(".buyer-name, .contracting-authority, .organisation")
-            .text()
-            .trim() || null;
+          const buyerName =
+            $container.find("dd, .authority, .buyer, .contracting-authority, .organisation").not((_i, el) => {
+              return $(el).text().includes("£");
+            }).first().text().trim() || null;
 
-          // Extract date
-          const publishedDate = $el
-            .find(".published-date, time, .date")
-            .first()
-            .text()
-            .trim() || null;
+          const publishedDate =
+            $container.find("time, .date, dd").filter((_i, el) => {
+              return /\d{1,2}\s+\w+\s+\d{4}|\d{4}-\d{2}-\d{2}/.test($(el).text());
+            }).first().text().trim() || null;
 
           results.push({
             noticeId,
@@ -150,17 +149,19 @@ export async function searchTenders(
             noticeUrl,
             pdfUrl: null,
           });
-        } catch (err) {
-          logger.warn({ err }, "Failed to parse tender item");
-        }
-      });
 
-      // If no results from .search-result-entry, try alternative parsing
-      if (results.length === 0) {
-        await parseAlternativeFormat($, results, stageParam, minValue);
+          pageResults++;
+        });
+
+        logger.info({ page, stageParam, pageResults }, "Parsed page results");
+
+        // If we got fewer results than expected, we've hit the last page
+        if (pageResults === 0) break;
+
+      } catch (err) {
+        logger.error({ err, stageParam, page }, "Failed to fetch search results page");
+        break;
       }
-    } catch (err) {
-      logger.error({ err, stageParam }, "Failed to fetch search results");
     }
   }
 
@@ -173,43 +174,6 @@ export async function searchTenders(
   });
 }
 
-async function parseAlternativeFormat(
-  $: cheerio.CheerioAPI,
-  results: ScrapedTender[],
-  stageParam: string,
-  minValue: number,
-): Promise<void> {
-  // Try broader selectors used by the GOV.UK service
-  $("ul.app-results li, .app-result-item, [data-result]").each((_i, el) => {
-    const $el = $(el);
-    const titleEl = $el.find("a").first();
-    const title = titleEl.text().trim();
-    const href = titleEl.attr("href");
-    if (!title || !href) return;
-
-    const noticeUrl = href.startsWith("http") ? href : `${BASE_URL}${href}`;
-    const noticeId = href.split("/").filter(Boolean).pop() ?? href;
-    const procurementStage = stageParam === "4" ? "award" : "contract";
-
-    const valueText = $el.find("dd, .value").text();
-    const awardedValue = parseValue(valueText);
-    if (awardedValue !== null && awardedValue < minValue) return;
-
-    results.push({
-      noticeId,
-      title,
-      description: null,
-      buyerName: $el.find("dd:nth-of-type(2), .authority").text().trim() || null,
-      awardedValue,
-      currency: "GBP",
-      procurementStage,
-      publishedDate: $el.find("time, .date").text().trim() || null,
-      noticeUrl,
-      pdfUrl: null,
-    });
-  });
-}
-
 export async function fetchTenderDetail(
   noticeUrl: string,
 ): Promise<Partial<ScrapedTender>> {
@@ -218,24 +182,24 @@ export async function fetchTenderDetail(
     const $ = cheerio.load(html);
 
     const description =
-      $(".notice-description, .summary, [data-description]").text().trim() ||
+      $(".notice-description, .summary, [data-description], .govuk-body").first().text().trim() ||
       null;
 
     const buyerName =
-      $(".contracting-authority, .buyer-name, .organisation-name")
-        .first()
-        .text()
-        .trim() || null;
+      $(".contracting-authority, .buyer-name, .organisation-name, dd").filter((_i, el) => {
+        const prev = $(el).prev("dt").text().toLowerCase();
+        return prev.includes("authority") || prev.includes("buyer") || prev.includes("organisation");
+      }).first().text().trim() || null;
 
     const valueText =
-      $(".contract-value, .awarded-value, [data-value]").first().text() || "";
+      $("dd").filter((_i, el) => {
+        return $(el).text().includes("£");
+      }).first().text() || "";
     const awardedValue = parseValue(valueText);
 
     // Look for PDF links
-    const pdfUrl =
-      $("a[href$='.pdf'], a[href*='/documents/'], a:contains('PDF')")
-        .first()
-        .attr("href") || null;
+    const pdfLink = $("a[href$='.pdf'], a[href*='/documents/'], a[href*='assets.publishing']").first();
+    const pdfUrl = pdfLink.attr("href") || null;
 
     const absolutePdfUrl = pdfUrl
       ? pdfUrl.startsWith("http")

@@ -24,7 +24,7 @@ export async function runDailyJob(): Promise<{
   // Step 1: Scrape new tenders
   let scraped;
   try {
-    scraped = await searchTenders(SEARCH_KEYWORD, MIN_VALUE, STAGES);
+    scraped = await searchTenders(SEARCH_KEYWORD, MIN_VALUE, STAGES, 3);
     logger.info({ count: scraped.length }, "Scraped tenders from Find a Tender");
   } catch (err) {
     logger.error({ err }, "Failed to scrape tenders — aborting daily job");
