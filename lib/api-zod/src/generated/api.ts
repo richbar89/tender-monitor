@@ -14,3 +14,135 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Searches Find a Tender Service for matching contracts
+ * @summary Search and scrape tenders
+ */
+export const SearchTendersBody = zod.object({
+  keyword: zod.string().describe('Search keyword (e.g. \"Framework\")'),
+  minValue: zod.number().nullish().describe("Minimum contract value in GBP"),
+  stages: zod
+    .array(zod.string())
+    .optional()
+    .describe("Procurement stages to filter by"),
+});
+
+export const SearchTendersResponse = zod.object({
+  jobId: zod.string(),
+  message: zod.string(),
+  tendersFound: zod.number(),
+});
+
+/**
+ * @summary List all cached tenders
+ */
+export const ListTendersQueryParams = zod.object({
+  status: zod.coerce.string().nullish(),
+  page: zod.coerce.number().nullish(),
+  limit: zod.coerce.number().nullish(),
+});
+
+export const ListTendersResponse = zod.object({
+  tenders: zod.array(
+    zod.object({
+      id: zod.number(),
+      noticeId: zod.string(),
+      title: zod.string(),
+      description: zod.string().nullish(),
+      buyerName: zod.string().nullish(),
+      awardedValue: zod.number().nullish(),
+      currency: zod.string().nullish(),
+      procurementStage: zod.string(),
+      publishedDate: zod.string().nullish(),
+      noticeUrl: zod.string(),
+      pdfStatus: zod
+        .string()
+        .describe("none | downloading | downloaded | processed | failed"),
+      unsuccessfulSuppliers: zod.array(zod.string()),
+      createdAt: zod.string(),
+      updatedAt: zod.string(),
+    }),
+  ),
+  total: zod.number(),
+  page: zod.number(),
+  limit: zod.number(),
+});
+
+/**
+ * @summary Get a tender by ID
+ */
+export const GetTenderParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetTenderResponse = zod
+  .object({
+    id: zod.number(),
+    noticeId: zod.string(),
+    title: zod.string(),
+    description: zod.string().nullish(),
+    buyerName: zod.string().nullish(),
+    awardedValue: zod.number().nullish(),
+    currency: zod.string().nullish(),
+    procurementStage: zod.string(),
+    publishedDate: zod.string().nullish(),
+    noticeUrl: zod.string(),
+    pdfStatus: zod
+      .string()
+      .describe("none | downloading | downloaded | processed | failed"),
+    unsuccessfulSuppliers: zod.array(zod.string()),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .and(
+    zod.object({
+      pdfUrl: zod.string().nullish(),
+      rawPdfText: zod.string().nullish(),
+    }),
+  );
+
+/**
+ * @summary Download and process PDF for a tender
+ */
+export const ProcessTenderPdfParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const ProcessTenderPdfResponse = zod
+  .object({
+    id: zod.number(),
+    noticeId: zod.string(),
+    title: zod.string(),
+    description: zod.string().nullish(),
+    buyerName: zod.string().nullish(),
+    awardedValue: zod.number().nullish(),
+    currency: zod.string().nullish(),
+    procurementStage: zod.string(),
+    publishedDate: zod.string().nullish(),
+    noticeUrl: zod.string(),
+    pdfStatus: zod
+      .string()
+      .describe("none | downloading | downloaded | processed | failed"),
+    unsuccessfulSuppliers: zod.array(zod.string()),
+    createdAt: zod.string(),
+    updatedAt: zod.string(),
+  })
+  .and(
+    zod.object({
+      pdfUrl: zod.string().nullish(),
+      rawPdfText: zod.string().nullish(),
+    }),
+  );
+
+/**
+ * @summary Get summary stats for all tenders
+ */
+export const GetTenderStatsResponse = zod.object({
+  total: zod.number(),
+  withUnsuccessfulSuppliers: zod.number(),
+  totalPdfProcessed: zod.number(),
+  totalPdfFailed: zod.number(),
+  averageValue: zod.number().nullish(),
+  highestValue: zod.number().nullish(),
+});

@@ -8,3 +8,88 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface ErrorResponse {
+  error: string;
+}
+
+export interface TenderSearchRequest {
+  /** Search keyword (e.g. "Framework") */
+  keyword: string;
+  /**
+   * Minimum contract value in GBP
+   * @nullable
+   */
+  minValue?: number | null;
+  /** Procurement stages to filter by */
+  stages?: string[];
+}
+
+export interface TenderSearchResponse {
+  jobId: string;
+  message: string;
+  tendersFound: number;
+}
+
+export interface Tender {
+  id: number;
+  noticeId: string;
+  title: string;
+  /** @nullable */
+  description?: string | null;
+  /** @nullable */
+  buyerName?: string | null;
+  /** @nullable */
+  awardedValue?: number | null;
+  /** @nullable */
+  currency?: string | null;
+  procurementStage: string;
+  /** @nullable */
+  publishedDate?: string | null;
+  noticeUrl: string;
+  /** none | downloading | downloaded | processed | failed */
+  pdfStatus: string;
+  unsuccessfulSuppliers: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TenderDetail = Tender & {
+  /** @nullable */
+  pdfUrl?: string | null;
+  /** @nullable */
+  rawPdfText?: string | null;
+};
+
+export interface TenderListResponse {
+  tenders: Tender[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface TenderStats {
+  total: number;
+  withUnsuccessfulSuppliers: number;
+  totalPdfProcessed: number;
+  totalPdfFailed: number;
+  /** @nullable */
+  averageValue?: number | null;
+  /** @nullable */
+  highestValue?: number | null;
+}
+
+export type ListTendersParams = {
+  /**
+   * @nullable
+   */
+  status?: string | null;
+  /**
+   * @nullable
+   */
+  page?: number | null;
+  /**
+   * @nullable
+   */
+  limit?: number | null;
+};

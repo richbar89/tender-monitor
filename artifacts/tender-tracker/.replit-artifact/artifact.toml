@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Tender Tracker"
+version = "1.0.0"
+id = "artifacts/tender-tracker"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21720
+
+[services.development]
+run = "pnpm --filter @workspace/tender-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/tender-tracker", "run", "build" ]
+publicDir = "artifacts/tender-tracker/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21720"
+BASE_PATH = "/"

@@ -6,4 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./errorResponse";
 export * from "./healthStatus";
+export * from "./listTendersParams";
+export * from "./tender";
+export * from "./tenderDetail";
+export * from "./tenderListResponse";
+export * from "./tenderSearchRequest";
+export * from "./tenderSearchResponse";
+export * from "./tenderStats";

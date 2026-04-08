@@ -5,18 +5,30 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  ErrorResponse,
+  HealthStatus,
+  ListTendersParams,
+  TenderDetail,
+  TenderListResponse,
+  TenderSearchRequest,
+  TenderSearchResponse,
+  TenderStats,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -92,6 +104,431 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Searches Find a Tender Service for matching contracts
+ * @summary Search and scrape tenders
+ */
+export const getSearchTendersUrl = () => {
+  return `/api/tenders/search`;
+};
+
+export const searchTenders = async (
+  tenderSearchRequest: TenderSearchRequest,
+  options?: RequestInit,
+): Promise<TenderSearchResponse> => {
+  return customFetch<TenderSearchResponse>(getSearchTendersUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(tenderSearchRequest),
+  });
+};
+
+export const getSearchTendersMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof searchTenders>>,
+    TError,
+    { data: BodyType<TenderSearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof searchTenders>>,
+  TError,
+  { data: BodyType<TenderSearchRequest> },
+  TContext
+> => {
+  const mutationKey = ["searchTenders"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof searchTenders>>,
+    { data: BodyType<TenderSearchRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return searchTenders(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SearchTendersMutationResult = NonNullable<
+  Awaited<ReturnType<typeof searchTenders>>
+>;
+export type SearchTendersMutationBody = BodyType<TenderSearchRequest>;
+export type SearchTendersMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Search and scrape tenders
+ */
+export const useSearchTenders = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof searchTenders>>,
+    TError,
+    { data: BodyType<TenderSearchRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof searchTenders>>,
+  TError,
+  { data: BodyType<TenderSearchRequest> },
+  TContext
+> => {
+  return useMutation(getSearchTendersMutationOptions(options));
+};
+
+/**
+ * @summary List all cached tenders
+ */
+export const getListTendersUrl = (params?: ListTendersParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/tenders?${stringifiedParams}`
+    : `/api/tenders`;
+};
+
+export const listTenders = async (
+  params?: ListTendersParams,
+  options?: RequestInit,
+): Promise<TenderListResponse> => {
+  return customFetch<TenderListResponse>(getListTendersUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListTendersQueryKey = (params?: ListTendersParams) => {
+  return [`/api/tenders`, ...(params ? [params] : [])] as const;
+};
+
+export const getListTendersQueryOptions = <
+  TData = Awaited<ReturnType<typeof listTenders>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: ListTendersParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listTenders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getListTendersQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof listTenders>>> = ({
+    signal,
+  }) => listTenders(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listTenders>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListTendersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listTenders>>
+>;
+export type ListTendersQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List all cached tenders
+ */
+
+export function useListTenders<
+  TData = Awaited<ReturnType<typeof listTenders>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: ListTendersParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listTenders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListTendersQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get a tender by ID
+ */
+export const getGetTenderUrl = (id: number) => {
+  return `/api/tenders/${id}`;
+};
+
+export const getTender = async (
+  id: number,
+  options?: RequestInit,
+): Promise<TenderDetail> => {
+  return customFetch<TenderDetail>(getGetTenderUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetTenderQueryKey = (id: number) => {
+  return [`/api/tenders/${id}`] as const;
+};
+
+export const getGetTenderQueryOptions = <
+  TData = Awaited<ReturnType<typeof getTender>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTender>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetTenderQueryKey(id);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getTender>>> = ({
+    signal,
+  }) => getTender(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<Awaited<ReturnType<typeof getTender>>, TError, TData> & {
+    queryKey: QueryKey;
+  };
+};
+
+export type GetTenderQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getTender>>
+>;
+export type GetTenderQueryError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Get a tender by ID
+ */
+
+export function useGetTender<
+  TData = Awaited<ReturnType<typeof getTender>>,
+  TError = ErrorType<ErrorResponse>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTender>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetTenderQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Download and process PDF for a tender
+ */
+export const getProcessTenderPdfUrl = (id: number) => {
+  return `/api/tenders/${id}/process`;
+};
+
+export const processTenderPdf = async (
+  id: number,
+  options?: RequestInit,
+): Promise<TenderDetail> => {
+  return customFetch<TenderDetail>(getProcessTenderPdfUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getProcessTenderPdfMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof processTenderPdf>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof processTenderPdf>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["processTenderPdf"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof processTenderPdf>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return processTenderPdf(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ProcessTenderPdfMutationResult = NonNullable<
+  Awaited<ReturnType<typeof processTenderPdf>>
+>;
+
+export type ProcessTenderPdfMutationError = ErrorType<ErrorResponse>;
+
+/**
+ * @summary Download and process PDF for a tender
+ */
+export const useProcessTenderPdf = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof processTenderPdf>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof processTenderPdf>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getProcessTenderPdfMutationOptions(options));
+};
+
+/**
+ * @summary Get summary stats for all tenders
+ */
+export const getGetTenderStatsUrl = () => {
+  return `/api/tenders/stats/summary`;
+};
+
+export const getTenderStats = async (
+  options?: RequestInit,
+): Promise<TenderStats> => {
+  return customFetch<TenderStats>(getGetTenderStatsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetTenderStatsQueryKey = () => {
+  return [`/api/tenders/stats/summary`] as const;
+};
+
+export const getGetTenderStatsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getTenderStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getTenderStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetTenderStatsQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getTenderStats>>> = ({
+    signal,
+  }) => getTenderStats({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getTenderStats>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetTenderStatsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getTenderStats>>
+>;
+export type GetTenderStatsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get summary stats for all tenders
+ */
+
+export function useGetTenderStats<
+  TData = Awaited<ReturnType<typeof getTenderStats>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getTenderStats>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetTenderStatsQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

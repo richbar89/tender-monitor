@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: tenders
+    description: Tender scraping and tracking operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,122 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /tenders/search:
+    post:
+      operationId: searchTenders
+      tags: [tenders]
+      summary: Search and scrape tenders
+      description: Searches Find a Tender Service for matching contracts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenderSearchRequest"
+      responses:
+        "200":
+          description: Search started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenderSearchResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tenders:
+    get:
+      operationId: listTenders
+      tags: [tenders]
+      summary: List all cached tenders
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: page
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: limit
+          in: query
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of tenders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenderListResponse"
+
+  /tenders/{id}:
+    get:
+      operationId: getTender
+      tags: [tenders]
+      summary: Get a tender by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Tender details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenderDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tenders/{id}/process:
+    post:
+      operationId: processTenderPdf
+      tags: [tenders]
+      summary: Download and process PDF for a tender
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Processing result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenderDetail"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tenders/stats/summary:
+    get:
+      operationId: getTenderStats
+      tags: [tenders]
+      summary: Get summary stats for all tenders
+      responses:
+        "200":
+          description: Stats summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenderStats"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +152,136 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    TenderSearchRequest:
+      type: object
+      properties:
+        keyword:
+          type: string
+          description: Search keyword (e.g. "Framework")
+        minValue:
+          type: ["number", "null"]
+          description: Minimum contract value in GBP
+        stages:
+          type: array
+          items:
+            type: string
+          description: Procurement stages to filter by
+      required:
+        - keyword
+
+    TenderSearchResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+        message:
+          type: string
+        tendersFound:
+          type: integer
+      required:
+        - jobId
+        - message
+        - tendersFound
+
+    Tender:
+      type: object
+      properties:
+        id:
+          type: integer
+        noticeId:
+          type: string
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        buyerName:
+          type: ["string", "null"]
+        awardedValue:
+          type: ["number", "null"]
+        currency:
+          type: ["string", "null"]
+        procurementStage:
+          type: string
+        publishedDate:
+          type: ["string", "null"]
+        noticeUrl:
+          type: string
+        pdfStatus:
+          type: string
+          description: "none | downloading | downloaded | processed | failed"
+        unsuccessfulSuppliers:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - noticeId
+        - title
+        - procurementStage
+        - noticeUrl
+        - pdfStatus
+        - unsuccessfulSuppliers
+        - createdAt
+        - updatedAt
+
+    TenderDetail:
+      allOf:
+        - $ref: "#/components/schemas/Tender"
+        - type: object
+          properties:
+            pdfUrl:
+              type: ["string", "null"]
+            rawPdfText:
+              type: ["string", "null"]
+
+    TenderListResponse:
+      type: object
+      properties:
+        tenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tender"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required:
+        - tenders
+        - total
+        - page
+        - limit
+
+    TenderStats:
+      type: object
+      properties:
+        total:
+          type: integer
+        withUnsuccessfulSuppliers:
+          type: integer
+        totalPdfProcessed:
+          type: integer
+        totalPdfFailed:
+          type: integer
+        averageValue:
+          type: ["number", "null"]
+        highestValue:
+          type: ["number", "null"]
+      required:
+        - total
+        - withUnsuccessfulSuppliers
+        - totalPdfProcessed
+        - totalPdfFailed
