@@ -114,18 +114,27 @@ export async function searchAwardedTenders(
     const $ = cheerio.load(html);
     const $main = $("main").length ? $("main") : $("body");
 
-    // Each result has an h3 with a Notice link — find the containing element
-    const containers = $main.find("h3:has(a[href*='/Notice/'])").map((_i, el) => $(el).parent());
+    // Find all notice links — then walk up to get the result container for each
+    const noticeLinks = $main.find("a[href*='/Notice/']");
 
-    if (containers.length === 0) {
+    if (noticeLinks.length === 0) {
       logger.info({ page }, "No more results — stopping");
       break;
     }
 
     let found = 0;
 
-    containers.each((_i, container) => {
-      const $c = $(container);
+    noticeLinks.each((_i, el) => {
+      const $link = $(el);
+      const href = $link.attr("href") ?? "";
+      const title = $link.text().trim();
+
+      // Must be a proper notice link with a reasonable title
+      if (!href.match(/\/Notice\/[\w-]+/) || title.length < 5) return;
+
+      // Walk up to find the result container (has a dl with dt/dd pairs)
+      const $c = $link.closest("div, li, article");
+      if (!$c.length || !$c.find("dl").length) return;
 
       // Parse all dt→dd pairs into a map
       const fields: Record<string, string> = {};
@@ -147,14 +156,9 @@ export async function searchAwardedTenders(
         "";
       const awardedValue = parseGBP(rawValue);
       if (awardedValue !== null && awardedValue < MIN_VALUE) {
-        logger.debug({ awardedValue, title: $c.find("h3 a").text().trim() }, "Skipping — below £5M");
+        logger.info({ awardedValue, title }, "Skipping — below £5M");
         return;
       }
-
-      // Get the notice link
-      const $link = $c.find("a[href*='/Notice/']").first();
-      const href = $link.attr("href") ?? "";
-      if (!href) return;
 
       const noticeId = href.split("/Notice/")[1]?.split("?")[0];
       if (!noticeId || seen.has(noticeId)) return;
@@ -163,7 +167,7 @@ export async function searchAwardedTenders(
       results.push({
         noticeId,
         noticeUrl: href.startsWith("http") ? href : `${BASE_URL}${href}`,
-        title: $link.text().trim(),
+        title,
         buyerName: fields["contracting organization"] ?? fields["buyer"] ?? null,
         awardedValue,
         publishedDate: fields["publication date"] ?? null,
