@@ -91,9 +91,11 @@ export async function searchTenders(
         const html = await fetchWithRetry(url);
         const $ = cheerio.load(html);
 
-        // Primary strategy: find all notice links directly — most reliable approach
-        // Find a Tender notice URLs follow the pattern /Notice/{id}
-        const noticeLinks = $("a[href*='/Notice/']");
+        // Restrict to main content area to avoid sidebar/related links
+        const $main = $("main, #main-content, .govuk-main-wrapper, body");
+
+        // Find notice links only within the main results area
+        const noticeLinks = $main.find("a[href*='/Notice/']");
 
         if (noticeLinks.length === 0) {
           logger.info({ url, page, stageParam }, "No notice links found on page — stopping pagination");
@@ -107,27 +109,34 @@ export async function searchTenders(
           const href = $el.attr("href");
           if (!href) return;
 
-          // Skip non-notice links (e.g. pagination, breadcrumbs)
-          if (!href.match(/\/Notice\/[\w-]+/)) return;
+          // Must match /Notice/{id} pattern
+          if (!href.match(/\/Notice\/[\w-]+/i)) return;
 
           const title = $el.text().trim();
           if (!title || title.length < 5) return;
 
-          // Skip live/open tenders — we only want awarded contracts
-          const titleLower = title.toLowerCase();
-          if (
-            titleLower.includes("prior information") ||
-            titleLower.includes("contract notice") && !titleLower.includes("award") ||
-            titleLower.includes("open procedure") ||
-            titleLower.includes("invitation to tender")
-          ) return;
+          // Walk up to find the result container to check notice type
+          const $container = $el.closest("article, li, .search-result, .govuk-grid-row, tr, div");
+          const containerText = $container.text().toLowerCase();
+
+          // Only accept award/contract award notices — reject anything that looks like a live tender
+          const isAwardNotice =
+            containerText.includes("award notice") ||
+            containerText.includes("contract award") ||
+            stageParam === "4" || stageParam === "5"; // trust the search filter as fallback
+
+          const isLiveTender =
+            containerText.includes("prior information notice") ||
+            (containerText.includes("contract notice") && !containerText.includes("award")) ||
+            containerText.includes("open procedure") ||
+            containerText.includes("invitation to tender") ||
+            containerText.includes("deadline");
+
+          if (!isAwardNotice || isLiveTender) return;
 
           const noticeUrl = href.startsWith("http") ? href : `${BASE_URL}${href}`;
           const noticeId = href.split("/Notice/")[1]?.split("?")[0] ?? href;
           const procurementStage = stageParam === "4" ? "award" : "contract";
-
-          // Walk up to find the result container for metadata
-          const $container = $el.closest("article, li, div.search-result, .govuk-grid-row, tr");
 
           const valueText = $container.find("dd, .value, [data-value]").filter((_i, el) => {
             return $(el).text().includes("£");
