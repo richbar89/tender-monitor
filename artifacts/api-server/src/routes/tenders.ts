@@ -15,6 +15,18 @@ import { v4 as uuidv4 } from "uuid";
 
 const router: IRouter = Router();
 
+// DELETE /tenders — wipe all tenders from the database
+router.delete("/tenders", async (req, res): Promise<void> => {
+  try {
+    await db.delete(tendersTable);
+    req.log.info("All tenders deleted");
+    res.json({ message: "Database cleared." });
+  } catch (err) {
+    req.log.error({ err }, "Failed to clear database");
+    res.status(500).json({ error: "Failed to clear database" });
+  }
+});
+
 // POST /tenders/run-now — manually trigger the daily pipeline
 router.post("/tenders/run-now", async (req, res): Promise<void> => {
   req.log.info("Manual daily job triggered via API");

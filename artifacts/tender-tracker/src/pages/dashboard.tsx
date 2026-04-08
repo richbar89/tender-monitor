@@ -6,7 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { TenderSearch } from "@/components/tender-search";
 import { TenderList } from "@/components/tender-list";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 
 function StatsBar() {
   const { data: stats, isLoading } = useGetTenderStats({
@@ -75,13 +76,50 @@ function ForcePullButton() {
   );
 }
 
+function ClearDatabaseButton() {
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [confirm, setConfirm] = useState(false);
+  const queryClient = useQueryClient();
+
+  async function handleClear() {
+    if (!confirm) { setConfirm(true); return; }
+    setConfirm(false);
+    setStatus("loading");
+    try {
+      await fetch("/api/tenders", { method: "DELETE" });
+      await queryClient.invalidateQueries();
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
+    } catch {
+      setStatus("error");
+      setTimeout(() => setStatus("idle"), 3000);
+    }
+  }
+
+  return (
+    <Button
+      onClick={handleClear}
+      disabled={status === "loading"}
+      variant="outline"
+      size="sm"
+      className={`font-mono text-xs tracking-wider uppercase gap-2 ${confirm ? "border-destructive text-destructive hover:bg-destructive/10" : ""}`}
+    >
+      <Trash2 className="w-3.5 h-3.5" />
+      {status === "loading" ? "Clearing..." : status === "done" ? "Cleared" : confirm ? "Confirm?" : "Clear DB"}
+    </Button>
+  );
+}
+
 export default function Dashboard() {
   return (
     <Layout>
       <div className="container mx-auto px-4 py-6 max-w-7xl">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xs font-mono text-muted-foreground tracking-widest uppercase">Framework Contract Awards</h1>
-          <ForcePullButton />
+          <div className="flex items-center gap-2">
+            <ClearDatabaseButton />
+            <ForcePullButton />
+          </div>
         </div>
         <StatsBar />
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
