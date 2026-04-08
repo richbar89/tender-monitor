@@ -118,6 +118,14 @@ export async function searchAwardedTenders(
 
         if (!href.match(/\/Notice\/[\w-]+/) || title.length < 5) return;
 
+        // UK notice type prefixes: UK4 = Contract Award Notice, UK5 = Contract Award Notice (Utilities)
+        // Reject all other UK types (UK1 PIN, UK2 Market Engagement, UK3 Contract Notice, etc.)
+        const ukTypeMatch = title.match(/^(UK\d+):/i);
+        if (ukTypeMatch) {
+          const ukType = ukTypeMatch[1].toUpperCase();
+          if (ukType !== "UK4" && ukType !== "UK5") return;
+        }
+
         const noticeId = href.split("/Notice/")[1]?.split("?")[0];
         if (!noticeId || seen.has(noticeId)) return;
         seen.add(noticeId);
