@@ -5,8 +5,8 @@ import { extractUnsuccessfulSuppliers } from "./pdf-extractor";
 
 const BASE_URL = "https://www.find-tender.service.gov.uk";
 
-// NoticeStatus codes: 4 = Award Notice, 5 = Contract Award Notice (utilities)
-const AWARD_STATUS_CODES = ["4", "5"];
+// NoticeStatus codes to search — we cast a wide net and filter to UK6 titles after
+const AWARD_STATUS_CODES = ["4", "5", "6", "7"];
 
 function formatDateParam(date: Date): string {
   const dd = String(date.getDate()).padStart(2, "0");
@@ -118,12 +118,10 @@ export async function searchAwardedTenders(
 
         if (!href.match(/\/Notice\/[\w-]+/) || title.length < 5) return;
 
-        // UK notice type prefixes: UK4 = Contract Award Notice, UK5 = Contract Award Notice (Utilities)
-        // Reject all other UK types (UK1 PIN, UK2 Market Engagement, UK3 Contract Notice, etc.)
+        // Only accept UK6 (Contract Award Notice)
         const ukTypeMatch = title.match(/^(UK\d+):/i);
         if (ukTypeMatch) {
-          const ukType = ukTypeMatch[1].toUpperCase();
-          if (ukType !== "UK4" && ukType !== "UK5") return;
+          if (ukTypeMatch[1].toUpperCase() !== "UK6") return;
         }
 
         const noticeId = href.split("/Notice/")[1]?.split("?")[0];
