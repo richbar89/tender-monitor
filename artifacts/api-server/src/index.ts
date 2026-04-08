@@ -1,5 +1,7 @@
+import cron from "node-cron";
 import app from "./app";
 import { logger } from "./lib/logger";
+import { runDailyJob } from "./lib/daily-job";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +24,14 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  // Schedule daily job at 06:00 UTC every day
+  cron.schedule("0 6 * * *", () => {
+    logger.info("Triggering scheduled daily tender job");
+    runDailyJob().catch((err) => {
+      logger.error({ err }, "Scheduled daily job failed");
+    });
+  });
+
+  logger.info("Daily tender job scheduled for 06:00 UTC");
 });

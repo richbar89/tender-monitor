@@ -9,10 +9,26 @@ import {
 } from "@workspace/api-zod";
 import { searchTenders, fetchTenderDetail } from "../lib/tender-scraper";
 import { extractPdfData } from "../lib/pdf-extractor";
+import { runDailyJob } from "../lib/daily-job";
 import { logger } from "../lib/logger";
 import { v4 as uuidv4 } from "uuid";
 
 const router: IRouter = Router();
+
+// POST /tenders/run-now — manually trigger the daily pipeline
+router.post("/tenders/run-now", async (req, res): Promise<void> => {
+  req.log.info("Manual daily job triggered via API");
+  // Run async so we don't hold the connection open for potentially minutes
+  runDailyJob()
+    .then((result) => {
+      logger.info(result, "Manual daily job completed");
+    })
+    .catch((err) => {
+      logger.error({ err }, "Manual daily job failed");
+    });
+
+  res.json({ message: "Daily job started. Check server logs for progress." });
+});
 
 // POST /tenders/search
 router.post("/tenders/search", async (req, res): Promise<void> => {
