@@ -1,12 +1,9 @@
-import { useListTenders, getListTendersQueryKey, useProcessTenderPdf } from "@workspace/api-client-react";
+import { useListTenders, getListTendersQueryKey } from "@workspace/api-client-react";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useQueryClient } from "@tanstack/react-query";
-import { FileText, Loader2, ArrowRight, AlertCircle, Building2, Calendar, PoundSterling, Search } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { ArrowRight, Building2, Calendar, PoundSterling, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export function PdfStatusBadge({ status }: { status: string }) {
@@ -27,8 +24,7 @@ export function PdfStatusBadge({ status }: { status: string }) {
 
 export function TenderList() {
   const [isPolling, setIsPolling] = useState(false);
-  const queryClient = useQueryClient();
-  
+
   const { data: listResponse, isLoading } = useListTenders(
     { limit: 50 },
     {
@@ -45,24 +41,6 @@ export function TenderList() {
       setIsPolling(hasDownloading);
     }
   }, [listResponse]);
-
-  const { toast } = useToast();
-  
-  const processMutation = useProcessTenderPdf({
-    mutation: {
-      onSuccess: () => {
-        toast({ title: "PDF Processing Started" });
-        queryClient.invalidateQueries({ queryKey: getListTendersQueryKey({ limit: 50 }) });
-      },
-      onError: () => {
-        toast({ variant: "destructive", title: "Failed to process PDF" });
-      }
-    }
-  });
-
-  const handleProcess = (id: number) => {
-    processMutation.mutate({ id });
-  };
 
   if (isLoading) {
     return (
@@ -130,24 +108,10 @@ export function TenderList() {
             </div>
             
             <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3 border-t sm:border-t-0 sm:border-l border-border pt-4 sm:pt-0 sm:pl-4 sm:w-32">
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="w-full rounded-none border-border bg-background hover:bg-muted font-mono text-xs"
-                onClick={() => handleProcess(tender.id)}
-                disabled={processMutation.isPending || tender.pdfStatus === "downloading" || tender.pdfStatus === "processed"}
-              >
-                {tender.pdfStatus === "downloading" ? (
-                  <Loader2 className="w-3 h-3 mr-2 animate-spin" />
-                ) : (
-                  <FileText className="w-3 h-3 mr-2 text-primary" />
-                )}
-                PROCESS
-              </Button>
               <Link href={`/tenders/${tender.id}`} className="w-full">
-                <Button variant="ghost" size="sm" className="w-full rounded-none hover:text-primary group-hover:text-primary transition-colors font-mono text-xs">
-                  DETAILS <ArrowRight className="w-3 h-3 ml-2" />
-                </Button>
+                <button className="w-full rounded-none border border-border bg-background hover:bg-muted font-mono text-xs px-3 py-1.5 flex items-center justify-center gap-1.5 transition-colors hover:text-primary">
+                  DETAILS <ArrowRight className="w-3 h-3" />
+                </button>
               </Link>
             </div>
           </div>

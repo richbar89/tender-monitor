@@ -10,15 +10,15 @@ const STAGES = ["award", "contract", "awarded", "contracted"];
 
 export async function runDailyJob(): Promise<{
   newTenders: number;
-  pdfsProcessed: number;
-  pdpsFailed: number;
+  processed: number;
+  failed: number;
   unsuccessfulBiddersByContract: Record<string, string[]>;
 }> {
   logger.info("Daily job started");
 
   let newTenders = 0;
-  let pdfsProcessed = 0;
-  let pdfsFailed = 0;
+  let processed = 0;
+  let failed = 0;
   const unsuccessfulBiddersByContract: Record<string, string[]> = {};
 
   // Step 1: Scrape new tenders
@@ -63,7 +63,7 @@ export async function runDailyJob(): Promise<{
     }
   }
 
-  // Step 3: Find all tenders that haven't had their PDF processed yet
+  // Step 3: Find all tenders that haven't been analysed yet
   const unprocessed = await db
     .select()
     .from(tendersTable)
@@ -74,84 +74,82 @@ export async function runDailyJob(): Promise<{
       ),
     );
 
-  logger.info({ count: unprocessed.length }, "Tenders pending PDF processing");
+  logger.info({ count: unprocessed.length }, "Tenders pending analysis");
 
-  // Step 4: For each unprocessed tender, fetch detail page if no PDF URL, then process PDF
+  // Step 4: For each unprocessed tender, fetch the notice page and extract supplier info
   for (const tender of unprocessed) {
-    let pdfUrl = tender.pdfUrl;
-
-    // Fetch detail page to find PDF URL if missing
-    if (!pdfUrl) {
-      try {
-        const detail = await fetchTenderDetail(tender.noticeUrl);
-        pdfUrl = detail.pdfUrl ?? null;
-
-        if (pdfUrl || detail.description || detail.buyerName || detail.awardedValue) {
-          await db
-            .update(tendersTable)
-            .set({
-              pdfUrl: pdfUrl ?? tender.pdfUrl,
-              description: detail.description ?? tender.description,
-              buyerName: detail.buyerName ?? tender.buyerName,
-              awardedValue: detail.awardedValue?.toString() ?? tender.awardedValue,
-            })
-            .where(eq(tendersTable.id, tender.id));
-        }
-      } catch (err) {
-        logger.warn({ err, tenderId: tender.id }, "Failed to fetch tender detail page");
-      }
-    }
-
-    if (!pdfUrl) {
-      await db
-        .update(tendersTable)
-        .set({ pdfStatus: "failed" })
-        .where(eq(tendersTable.id, tender.id));
-      pdfsFailed++;
-      continue;
-    }
-
-    // Process the PDF
     try {
       await db
         .update(tendersTable)
         .set({ pdfStatus: "downloading" })
         .where(eq(tendersTable.id, tender.id));
 
-      const result = await extractPdfData(pdfUrl);
+      // Always fetch the detail page — extracts suppliers from HTML AND finds PDF URL
+      const detail = await fetchTenderDetail(tender.noticeUrl);
+
+      // Update metadata from detail page
+      await db
+        .update(tendersTable)
+        .set({
+          pdfUrl: detail.pdfUrl ?? tender.pdfUrl,
+          description: detail.description ?? tender.description,
+          buyerName: detail.buyerName ?? tender.buyerName,
+          awardedValue: detail.awardedValue?.toString() ?? tender.awardedValue,
+        })
+        .where(eq(tendersTable.id, tender.id));
+
+      let suppliers: string[] = detail.htmlSuppliers ?? [];
+      let rawText: string = detail.htmlText ?? "";
+
+      // If a PDF was found, also try extracting from it (may yield more structured results)
+      const pdfUrl = detail.pdfUrl ?? tender.pdfUrl;
+      if (pdfUrl) {
+        try {
+          const pdfResult = await extractPdfData(pdfUrl);
+          if (pdfResult.unsuccessfulSuppliers.length > 0) {
+            suppliers = pdfResult.unsuccessfulSuppliers;
+          }
+          rawText = pdfResult.text.slice(0, 100_000);
+          logger.info({ tenderId: tender.id, count: suppliers.length }, "Extracted from PDF");
+        } catch (pdfErr) {
+          logger.warn({ pdfErr, tenderId: tender.id }, "PDF extraction failed, using HTML results");
+        }
+      }
 
       await db
         .update(tendersTable)
         .set({
           pdfStatus: "processed",
-          rawPdfText: result.text.slice(0, 100_000),
-          unsuccessfulSuppliers: result.unsuccessfulSuppliers,
+          rawPdfText: rawText,
+          unsuccessfulSuppliers: suppliers,
         })
         .where(eq(tendersTable.id, tender.id));
 
-      pdfsProcessed++;
+      processed++;
 
-      if (result.unsuccessfulSuppliers.length > 0) {
-        unsuccessfulBiddersByContract[tender.title] = result.unsuccessfulSuppliers;
+      if (suppliers.length > 0) {
+        unsuccessfulBiddersByContract[tender.title] = suppliers;
         logger.info(
-          { tenderId: tender.id, title: tender.title, count: result.unsuccessfulSuppliers.length },
+          { tenderId: tender.id, title: tender.title, count: suppliers.length },
           "Unsuccessful suppliers found",
         );
+      } else {
+        logger.info({ tenderId: tender.id }, "No unsuccessful suppliers found in this notice");
       }
     } catch (err) {
-      logger.error({ err, tenderId: tender.id }, "Failed to process PDF");
+      logger.error({ err, tenderId: tender.id }, "Failed to analyse tender");
       await db
         .update(tendersTable)
         .set({ pdfStatus: "failed" })
         .where(eq(tendersTable.id, tender.id));
-      pdfsFailed++;
+      failed++;
     }
   }
 
   logger.info(
-    { newTenders, pdfsProcessed, pdfsFailed, contracts: Object.keys(unsuccessfulBiddersByContract).length },
+    { newTenders, processed, failed, contracts: Object.keys(unsuccessfulBiddersByContract).length },
     "Daily job completed",
   );
 
-  return { newTenders, pdfsProcessed, pdpsFailed: pdfsFailed, unsuccessfulBiddersByContract };
+  return { newTenders, processed, failed, unsuccessfulBiddersByContract };
 }

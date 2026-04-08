@@ -1,6 +1,7 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "./logger";
+import { extractUnsuccessfulSuppliers } from "./pdf-extractor";
 
 export interface ScrapedTender {
   noticeId: string;
@@ -112,6 +113,15 @@ export async function searchTenders(
           const title = $el.text().trim();
           if (!title || title.length < 5) return;
 
+          // Skip live/open tenders — we only want awarded contracts
+          const titleLower = title.toLowerCase();
+          if (
+            titleLower.includes("prior information") ||
+            titleLower.includes("contract notice") && !titleLower.includes("award") ||
+            titleLower.includes("open procedure") ||
+            titleLower.includes("invitation to tender")
+          ) return;
+
           const noticeUrl = href.startsWith("http") ? href : `${BASE_URL}${href}`;
           const noticeId = href.split("/Notice/")[1]?.split("?")[0] ?? href;
           const procurementStage = stageParam === "4" ? "award" : "contract";
@@ -174,9 +184,14 @@ export async function searchTenders(
   });
 }
 
+export interface TenderDetailResult extends Partial<ScrapedTender> {
+  htmlSuppliers: string[];
+  htmlText: string;
+}
+
 export async function fetchTenderDetail(
   noticeUrl: string,
-): Promise<Partial<ScrapedTender>> {
+): Promise<TenderDetailResult> {
   try {
     const html = await fetchWithRetry(noticeUrl);
     const $ = cheerio.load(html);
@@ -186,7 +201,7 @@ export async function fetchTenderDetail(
       null;
 
     const buyerName =
-      $(".contracting-authority, .buyer-name, .organisation-name, dd").filter((_i, el) => {
+      $("dd").filter((_i, el) => {
         const prev = $(el).prev("dt").text().toLowerCase();
         return prev.includes("authority") || prev.includes("buyer") || prev.includes("organisation");
       }).first().text().trim() || null;
@@ -197,24 +212,34 @@ export async function fetchTenderDetail(
       }).first().text() || "";
     const awardedValue = parseValue(valueText);
 
-    // Look for PDF links
-    const pdfLink = $("a[href$='.pdf'], a[href*='/documents/'], a[href*='assets.publishing']").first();
+    // Look for PDF / document links
+    const pdfLink = $(
+      "a[href$='.pdf'], a[href*='/documents/'], a[href*='assets.publishing'], a[href*='/Documents/']"
+    ).first();
     const pdfUrl = pdfLink.attr("href") || null;
-
     const absolutePdfUrl = pdfUrl
-      ? pdfUrl.startsWith("http")
-        ? pdfUrl
-        : `${BASE_URL}${pdfUrl}`
+      ? pdfUrl.startsWith("http") ? pdfUrl : `${BASE_URL}${pdfUrl}`
       : null;
+
+    // Extract all visible text from the page and parse for unsuccessful suppliers
+    const pageText = $("body").text();
+    const htmlSuppliers = extractUnsuccessfulSuppliers(pageText);
+
+    logger.info(
+      { noticeUrl, htmlSuppliers: htmlSuppliers.length, hasPdf: !!absolutePdfUrl },
+      "Fetched tender detail",
+    );
 
     return {
       description,
       buyerName,
       awardedValue,
       pdfUrl: absolutePdfUrl,
+      htmlSuppliers,
+      htmlText: pageText.slice(0, 100_000),
     };
   } catch (err) {
     logger.warn({ err, noticeUrl }, "Failed to fetch tender detail page");
-    return {};
+    return { htmlSuppliers: [], htmlText: "" };
   }
 }
