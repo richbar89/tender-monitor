@@ -4,7 +4,6 @@ import { searchAwardedTenders, fetchTenderDetail } from "./tender-scraper";
 import { extractPdfData } from "./pdf-extractor";
 import { logger } from "./logger";
 
-const KEYWORD = "Framework";
 const MIN_VALUE = 5_000_000;
 
 export async function runDailyJob(days = 1): Promise<{
@@ -23,7 +22,7 @@ export async function runDailyJob(days = 1): Promise<{
   // ── Step 1: Search Find a Tender ──────────────────────────────────────────
   let scraped;
   try {
-    scraped = await searchAwardedTenders(KEYWORD, days);
+    scraped = await searchAwardedTenders(days);
     logger.info({ count: scraped.length }, "Search complete");
   } catch (err) {
     logger.error({ err }, "Search failed — aborting job");

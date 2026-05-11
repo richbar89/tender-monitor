@@ -73,13 +73,12 @@ export interface TenderDetail {
 // ─── Search ───────────────────────────────────────────────────────────────────
 
 /**
- * Search Find a Tender for UK6 (Contract Award Notice) results.
- * Parses the correct dt/dd structure and filters to:
- *   - Notice type: UK6 only
+ * Search Find a Tender for awarded/contracted notices (UK6 or UK7).
+ * Filters to:
+ *   - Notice type: UK6 (Contract award notice) or UK7 (Contract details notice)
  *   - Value: >= £5,000,000 (skips if value is known to be below)
  */
 export async function searchAwardedTenders(
-  keyword: string,
   days: number = 1,
 ): Promise<SearchResult[]> {
   const results: SearchResult[] = [];
@@ -94,7 +93,7 @@ export async function searchAwardedTenders(
   for (let page = 1; page <= 10; page++) {
     const url =
       `${BASE_URL}/Search/Results` +
-      `?KeyWord=${encodeURIComponent(keyword)}` +
+      `?KeyWord=` +
       `&NoticeStatus=6` +
       `&PublishedFrom=${dateFrom}` +
       `&PublishedTo=${dateTo}` +
@@ -144,9 +143,9 @@ export async function searchAwardedTenders(
         fields[key] = val;
       });
 
-      // Must be UK6
+      // Must be UK6 (contract award) or UK7 (contract details)
       const noticeType = (fields["notice type"] ?? "").toLowerCase();
-      if (!noticeType.includes("uk6")) return;
+      if (!noticeType.includes("uk6") && !noticeType.includes("uk7")) return;
 
       // Extract value and apply £5M filter
       const rawValue =
@@ -177,7 +176,9 @@ export async function searchAwardedTenders(
     });
 
     logger.info({ page, found }, "Parsed results page");
-    if (found === 0) break;
+    // Don't break on found === 0: with an empty keyword the page may contain
+    // only non-UK6/UK7 notices while later pages still have hits. The
+    // noticeLinks.length === 0 check above handles the true end-of-results.
   }
 
   logger.info({ total: results.length }, "Search complete");
@@ -186,11 +187,63 @@ export async function searchAwardedTenders(
 
 // ─── Detail ───────────────────────────────────────────────────────────────────
 
+// Headings on UK6/UK7 notice pages we treat as the start of an unsuccessful-suppliers list.
+// Examples seen in the wild: "Unsuccessful suppliers", "Unsuccessful bidders",
+// "Unsuccessful tenderers". Match any of those nouns (plural or singular).
+const UNSUCCESSFUL_HEADING_RE =
+  /\bunsuccessful\s+(suppliers?|bidders?|tenderers?|contractors?|applicants?|participants?|economic\s+operators?)\b/i;
+
+/**
+ * Walk the parsed notice DOM and collect supplier names that sit under a heading
+ * matching /unsuccessful (suppliers|bidders|tenderers|...)/.
+ *
+ * Find a Tender renders these as `<h4>…</h4><ul><li><a>NAME</a></li>…</ul>`,
+ * which the flat-text regex extractor mangles because whitespace is collapsed.
+ */
+function extractUnsuccessfulSuppliersFromDom(
+  $: cheerio.CheerioAPI,
+): string[] {
+  const found = new Set<string>();
+
+  $("h1, h2, h3, h4, h5, h6").each((_i, heading) => {
+    const headingText = $(heading).text().trim();
+    if (!UNSUCCESSFUL_HEADING_RE.test(headingText)) return;
+
+    // Walk siblings after the heading until the next heading, picking up
+    // <li> items from any <ul>/<ol> in between (direct or nested wrapper).
+    let node = $(heading).next();
+    let safety = 0;
+    while (node.length && safety < 10) {
+      safety++;
+      const tag = (node.prop("tagName") ?? "").toLowerCase();
+      if (/^h[1-6]$/.test(tag)) break;
+
+      const items =
+        tag === "ul" || tag === "ol"
+          ? node.children("li")
+          : node.find("ul > li, ol > li");
+
+      items.each((_j, li) => {
+        // Supplier names on Find a Tender are usually wrapped in an <a> to an
+        // in-page anchor; fall back to the <li>'s own text if there isn't one.
+        const $li = $(li);
+        const linkText = $li.find("a").first().text().trim();
+        const name = (linkText || $li.text()).trim().replace(/\s+/g, " ");
+        if (name.length >= 2 && name.length <= 200) found.add(name);
+      });
+
+      node = node.next();
+    }
+  });
+
+  return Array.from(found);
+}
+
 /**
  * Fetch a notice detail page and extract:
  * - buyer name, description, value
  * - PDF/document download links
- * - Unsuccessful suppliers from HTML text (if present)
+ * - Unsuccessful suppliers from the DOM (preferred) or HTML text (fallback)
  */
 export async function fetchTenderDetail(noticeUrl: string): Promise<TenderDetail> {
   try {
@@ -253,8 +306,12 @@ export async function fetchTenderDetail(noticeUrl: string): Promise<TenderDetail
       });
     }
 
-    // Extract unsuccessful suppliers from HTML text as a best-effort fallback
-    const htmlSuppliers = extractUnsuccessfulSuppliers(rawText);
+    // Prefer structural DOM extraction (handles UK6/UK7 notice pages), then fall
+    // back to the regex-on-text extractor for anything we miss.
+    const domSuppliers = extractUnsuccessfulSuppliersFromDom($);
+    const htmlSuppliers = domSuppliers.length > 0
+      ? domSuppliers
+      : extractUnsuccessfulSuppliers(rawText);
 
     logger.info(
       { noticeUrl, awardedValue, hasPdf: !!pdfUrl, htmlSuppliers: htmlSuppliers.length },
